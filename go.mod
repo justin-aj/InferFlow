@@ -1,3 +1,3 @@
-module github.com/ajinfrank/inferflow
+module inferflow
 
 go 1.22.2

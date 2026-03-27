@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ajinfrank/inferflow/internal/server"
+	"inferflow/internal/server"
 )
 
 func main() {

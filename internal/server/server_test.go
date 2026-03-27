@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ajinfrank/inferflow/internal/proxy"
-	"github.com/ajinfrank/inferflow/internal/router"
+	"inferflow/internal/proxy"
+	"inferflow/internal/router"
 )
 
 func TestChatCompletionsSuccess(t *testing.T) {

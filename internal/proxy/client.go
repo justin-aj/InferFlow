@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ajinfrank/inferflow/internal/router"
+	"inferflow/internal/router"
 )
 
 type ChatMessage struct {

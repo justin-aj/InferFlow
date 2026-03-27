@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ajinfrank/inferflow/internal/metrics"
-	"github.com/ajinfrank/inferflow/internal/otel"
-	"github.com/ajinfrank/inferflow/internal/proxy"
-	"github.com/ajinfrank/inferflow/internal/router"
+	"inferflow/internal/metrics"
+	"inferflow/internal/otel"
+	"inferflow/internal/proxy"
+	"inferflow/internal/router"
 )
 
 type Server struct {

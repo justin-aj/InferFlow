@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ajinfrank/inferflow/internal/proxy"
+	"inferflow/internal/proxy"
 )
 
 func TestEndToEndChatCompletion(t *testing.T) {
