@@ -1,0 +1,19 @@
+services:
+  mock-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-backend
+    ports:
+      - "9000:9000"
+
+  router:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    environment:
+      INFERFLOW_BACKENDS: http://mock-backend:9000
+      INFERFLOW_LISTEN_ADDR: :8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mock-backend

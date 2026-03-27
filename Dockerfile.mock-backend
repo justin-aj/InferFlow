@@ -1,0 +1,10 @@
+FROM golang:1.22 AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd ./cmd
+RUN go build -o /out/mock-backend ./cmd/mock-backend
+
+FROM gcr.io/distroless/base-debian12
+COPY --from=build /out/mock-backend /mock-backend
+EXPOSE 9000
+ENTRYPOINT ["/mock-backend"]

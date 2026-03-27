@@ -1,0 +1,12 @@
+# Starter Helm values placeholder for Prometheus/Grafana/Tempo wiring.
+# Week 1 intentionally stops at repository scaffolding and does not yet
+# provide a complete observability deployment.
+
+grafana:
+  enabled: true
+
+prometheus:
+  enabled: true
+
+tempo:
+  enabled: true

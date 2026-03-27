@@ -1,0 +1,156 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/ajinfrank/inferflow/internal/proxy"
+	"github.com/ajinfrank/inferflow/internal/router"
+)
+
+func TestChatCompletionsSuccess(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		case "/infer":
+			writeJSON(w, http.StatusOK, map[string]string{
+				"model":       "mock-llm",
+				"output_text": "Mock response to: Hello",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	srv := newTestServer(t, []string{backend.URL})
+	defer func() { _ = srv.Shutdown() }()
+
+	body := proxy.ChatCompletionRequest{
+		Model: "mock-llm",
+		Messages: []proxy.ChatMessage{{
+			Role:    "user",
+			Content: "Hello",
+		}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", mustJSON(body))
+	rec := httptest.NewRecorder()
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp proxy.ChatCompletionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content == "" {
+		t.Fatalf("expected one non-empty choice, got %+v", resp.Choices)
+	}
+}
+
+func TestChatCompletionsRejectsMalformedJSON(t *testing.T) {
+	srv := newTestServer(t, []string{"http://127.0.0.1:1"})
+	defer func() { _ = srv.Shutdown() }()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString("{"))
+	rec := httptest.NewRecorder()
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestReadyzReflectsBackendHealth(t *testing.T) {
+	backend, _ := router.NewBackend("a", "http://backend.test")
+	backend.SetHealthy(false)
+
+	srv, err := New(Config{
+		ListenAddr:           ":0",
+		Backends:             []*router.Backend{backend},
+		ProbeInterval:        10 * time.Hour,
+		BackendRequestTimout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer func() { _ = srv.Shutdown() }()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestChatCompletionsReturnsBadGatewayWhenBackendFails(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		case "/infer":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	srv := newTestServer(t, []string{backend.URL})
+	defer func() { _ = srv.Shutdown() }()
+
+	body := proxy.ChatCompletionRequest{
+		Model: "mock-llm",
+		Messages: []proxy.ChatMessage{{
+			Role:    "user",
+			Content: "Hello",
+		}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", mustJSON(body))
+	rec := httptest.NewRecorder()
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status 502, got %d", rec.Code)
+	}
+}
+
+func newTestServer(t *testing.T, backendURLs []string) *Server {
+	t.Helper()
+	backends := make([]*router.Backend, 0, len(backendURLs))
+	for idx, raw := range backendURLs {
+		backend, err := router.NewBackend(string(rune('a'+idx)), raw)
+		if err != nil {
+			t.Fatalf("new backend: %v", err)
+		}
+		backends = append(backends, backend)
+	}
+
+	srv, err := New(Config{
+		ListenAddr:           ":0",
+		Backends:             backends,
+		ProbeInterval:        10 * time.Hour,
+		BackendRequestTimout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.probeBackends()
+	return srv
+}
+
+func mustJSON(v any) *bytes.Buffer {
+	data, _ := json.Marshal(v)
+	return bytes.NewBuffer(data)
+}
