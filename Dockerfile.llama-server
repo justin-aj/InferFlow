@@ -1,0 +1,15 @@
+FROM ubuntu:22.04 AS download
+RUN apt-get update && apt-get install -y wget ca-certificates --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN wget -q "https://github.com/ggml-org/llama.cpp/releases/download/b8838/llama-b8838-bin-ubuntu-x64.tar.gz" -O /tmp/llama.tar.gz \
+    && tar -xzf /tmp/llama.tar.gz -C /tmp
+
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y libgomp1 ca-certificates curl --no-install-recommends && rm -rf /var/lib/apt/lists/*
+# Copy binary and all shared libs to the same directory for backend plugin discovery
+COPY --from=download /tmp/llama-b8838/llama-server /app/llama-server
+COPY --from=download /tmp/llama-b8838/lib*.so* /app/
+RUN chmod +x /app/llama-server \
+    && echo "/app" > /etc/ld.so.conf.d/llama.conf && ldconfig
+WORKDIR /app
+EXPOSE 8080
+ENTRYPOINT ["/app/llama-server"]
