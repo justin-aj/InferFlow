@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"inferflow/internal/cache"
 	"inferflow/internal/metrics"
 	"inferflow/internal/otel"
 	"inferflow/internal/proxy"
@@ -20,6 +24,8 @@ type Server struct {
 	httpSrv      *http.Server
 	client       *proxy.Client
 	metrics      *metrics.State
+	cacheStore   cache.Store
+	cacheTTL     time.Duration
 	strategyMu   sync.RWMutex
 	strategy     router.Strategy
 	strategyName string
@@ -31,10 +37,16 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	rr := router.NewRoundRobin(cfg.Backends)
+	store := cfg.AffinityStore
+	if store == nil {
+		store = cache.NewMemoryStore()
+	}
 	s := &Server{
 		cfg:          cfg,
 		client:       proxy.NewClient(cfg.BackendRequestTimout),
 		metrics:      &metrics.State{},
+		cacheStore:   store,
+		cacheTTL:     cfg.CacheTTL,
 		strategy:     rr,
 		strategyName: rr.Name(),
 		stopCh:       make(chan struct{}),
@@ -44,12 +56,14 @@ func New(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/strategy", s.handleStrategy)
+	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 
 	s.httpSrv = &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: mux,
+		Handler: corsMiddleware(mux),
 	}
 
 	s.startProber()
@@ -114,6 +128,36 @@ func (s *Server) handleStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+
+	fmt.Fprintf(w, "# HELP inferflow_inflight_requests Current in-flight requests.\n")
+	fmt.Fprintf(w, "# TYPE inferflow_inflight_requests gauge\n")
+	fmt.Fprintf(w, "inferflow_inflight_requests %d\n", s.metrics.InFlight())
+
+	fmt.Fprintf(w, "# HELP inferflow_requests_total Total requests accepted by the router.\n")
+	fmt.Fprintf(w, "# TYPE inferflow_requests_total counter\n")
+	fmt.Fprintf(w, "inferflow_requests_total %d\n", s.metrics.RequestsTotal())
+
+	fmt.Fprintf(w, "# HELP inferflow_backend_errors_total Total backend request errors.\n")
+	fmt.Fprintf(w, "# TYPE inferflow_backend_errors_total counter\n")
+	fmt.Fprintf(w, "inferflow_backend_errors_total %d\n", s.metrics.BackendErrors())
+
+	strategies := s.metrics.StrategySnapshot()
+	fmt.Fprintf(w, "# HELP inferflow_strategy_selections_total Total strategy selections.\n")
+	fmt.Fprintf(w, "# TYPE inferflow_strategy_selections_total counter\n")
+	for _, name := range s.metrics.SortedKeys(strategies) {
+		fmt.Fprintf(w, "inferflow_strategy_selections_total{strategy=%q} %d\n", name, strategies[name])
+	}
+
+	backends := s.metrics.BackendSnapshot()
+	fmt.Fprintf(w, "# HELP inferflow_backend_selections_total Total backend selections.\n")
+	fmt.Fprintf(w, "# TYPE inferflow_backend_selections_total counter\n")
+	for _, name := range s.metrics.SortedKeys(backends) {
+		fmt.Fprintf(w, "inferflow_backend_selections_total{backend=%q} %d\n", name, backends[name])
+	}
+}
+
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -133,18 +177,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.metrics.IncRequestsTotal()
+
 	estimatedCost := estimateRequestCost(req.Messages)
+	cacheKey := buildCacheKey(req.Model, req.Messages)
 	ctx, strategySpan := otel.StartSpan(ctx, "strategy_evaluate")
 	strategyName, strategy := s.activeStrategy()
-	decision, err := strategy.Select(estimatedCost)
+	decision, err := strategy.Select(router.SelectionInput{
+		Context:       ctx,
+		EstimatedCost: estimatedCost,
+		CacheKey:      cacheKey,
+	})
 	if err == nil {
 		strategySpan.SetAttribute("strategy_name", strategyName)
 		strategySpan.SetAttribute("selected_backend", decision.Backend.Name)
 		if strategyName == router.StrategyLeastPending {
 			strategySpan.SetAttribute("pending_requests", decision.PendingRequests)
 		}
-		if strategyName == router.StrategyCostAware {
-			strategySpan.SetAttribute("pending_cost", decision.PendingCost)
+		if strategyName == router.StrategyKVAware {
+			strategySpan.SetAttribute("cache_key_present", cacheKey != "")
 		}
 	}
 	strategySpan.End()
@@ -155,18 +206,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	backend := decision.Backend
 	defer decision.Release()
+	s.metrics.RecordStrategy(strategyName)
+	s.metrics.RecordBackend(backend.Name)
+	if strategyName == router.StrategyKVAware {
+		if decision.CacheHit {
+			s.metrics.IncKVCacheHit()
+		} else {
+			s.metrics.IncKVCacheMiss()
+		}
+	}
+	w.Header().Set("X-Inferflow-Backend", backend.Name)
+	w.Header().Set("X-Inferflow-Strategy", strategyName)
 
 	s.metrics.IncInFlight()
 	defer s.metrics.DecInFlight()
 
+	inferenceStart := time.Now()
 	ctx, inferenceSpan := otel.StartSpan(ctx, "backend_inference")
 	resp, err := s.client.SendChatCompletion(ctx, backend, req)
 	inferenceSpan.End()
+	s.metrics.RecordLatency(backend.Name, float64(time.Since(inferenceStart).Milliseconds()))
 	if err != nil {
 		backend.SetHealthy(false)
+		s.metrics.IncBackendErrors()
 		http.Error(w, "backend request failed", http.StatusBadGateway)
 		return
 	}
+
+	s.recordAffinity(ctx, cacheKey, backend.Name)
 
 	_, streamSpan := otel.StartSpan(ctx, "response_stream")
 	defer streamSpan.End()
@@ -219,8 +286,10 @@ func (s *Server) setStrategy(raw string) (string, error) {
 		next = router.NewRoundRobin(s.cfg.Backends)
 	case router.StrategyLeastPending:
 		next = router.NewLeastPending(s.cfg.Backends)
-	case router.StrategyCostAware:
-		next = router.NewCostAware(s.cfg.Backends)
+	case router.StrategyRandom:
+		next = router.NewRandom(s.cfg.Backends)
+	case router.StrategyKVAware:
+		next = router.NewKVAware(s.cfg.Backends, s.cacheStore)
 	default:
 		return "", errors.New("unsupported strategy")
 	}
@@ -241,7 +310,7 @@ func normalizeStrategyName(raw string) (string, error) {
 	}
 
 	switch name {
-	case router.StrategyRoundRobin, router.StrategyLeastPending, router.StrategyCostAware:
+	case router.StrategyRoundRobin, router.StrategyLeastPending, router.StrategyRandom, router.StrategyKVAware:
 		return name, nil
 	default:
 		return "", errors.New("unsupported strategy")
@@ -275,6 +344,92 @@ func estimateRequestCost(messages []proxy.ChatMessage) int {
 		return 1
 	}
 	return cost
+}
+
+func buildCacheKey(model string, messages []proxy.ChatMessage) string {
+	var builder strings.Builder
+	builder.WriteString(strings.TrimSpace(model))
+	builder.WriteByte('\n')
+	for _, msg := range messages {
+		builder.WriteString(strings.TrimSpace(msg.Role))
+		builder.WriteByte(':')
+		builder.WriteString(strings.TrimSpace(msg.Content))
+		builder.WriteByte('\n')
+	}
+	payload := strings.TrimSpace(builder.String())
+	if payload == "" {
+		return ""
+	}
+
+	sum := sha256.Sum256([]byte(payload))
+	return "inferflow:prefix:" + hex.EncodeToString(sum[:16])
+}
+
+func (s *Server) recordAffinity(ctx context.Context, cacheKey, backendName string) {
+	if s.cacheStore == nil || cacheKey == "" || backendName == "" {
+		return
+	}
+	_ = s.cacheStore.RememberBackend(ctx, cacheKey, backendName, s.cacheTTL)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	strategyName, _ := s.activeStrategy()
+	latency := s.metrics.LatencySnapshot()
+	backendSelections := s.metrics.BackendSnapshot()
+
+	type backendStatus struct {
+		Name       string `json:"name"`
+		Healthy    bool   `json:"healthy"`
+		Selections int64  `json:"selections"`
+		LatencyMs  int64  `json:"latency_ms"`
+	}
+	backends := make([]backendStatus, 0, len(s.cfg.Backends))
+	for _, b := range s.cfg.Backends {
+		backends = append(backends, backendStatus{
+			Name:       b.Name,
+			Healthy:    b.Healthy(),
+			Selections: backendSelections[b.Name],
+			LatencyMs:  latency[b.Name],
+		})
+	}
+
+	hits := s.metrics.KVCacheHits()
+	misses := s.metrics.KVCacheMisses()
+	var hitRate float64
+	if total := hits + misses; total > 0 {
+		hitRate = float64(hits) / float64(total)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"strategy": strategyName,
+		"backends": backends,
+		"metrics": map[string]any{
+			"requests_total":    s.metrics.RequestsTotal(),
+			"in_flight":         s.metrics.InFlight(),
+			"backend_errors":    s.metrics.BackendErrors(),
+			"kv_cache_hits":     hits,
+			"kv_cache_misses":   misses,
+			"kv_cache_hit_rate": hitRate,
+		},
+	})
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
