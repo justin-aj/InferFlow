@@ -4,28 +4,25 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"inferflow/internal/adapter"
-	"inferflow/internal/vllm"
+	"inferflow/internal/llm"
 )
 
 func main() {
-	addr := getenv("VLLM_ADAPTER_ADDR", ":9000")
-	vllmURL := getenv("VLLM_BASE_URL", "http://localhost:8000")
-	modelName := getenv("VLLM_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
-	timeout := durationFromEnv("VLLM_TIMEOUT", 60*time.Second)
-	maxTokens := intFromEnv("VLLM_MAX_TOKENS", 128)
-	temperature := floatFromEnv("VLLM_TEMPERATURE", 0.0)
+	addr := getenv("LLAMA_ADAPTER_ADDR", ":9000")
+	llamaURL := getenv("LLAMA_BASE_URL", "http://localhost:8080")
+	modelName := getenv("LLAMA_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
+	timeout := durationFromEnv("LLAMA_TIMEOUT", 60*time.Second)
 
-	client := vllm.NewClient(vllmURL, modelName, timeout, maxTokens, temperature)
+	client := llm.NewClient(llamaURL, modelName, timeout)
 	server := &http.Server{
 		Addr:    addr,
 		Handler: adapter.NewHandler(client),
 	}
 
-	log.Printf("vllm adapter listening on %s, targeting %s model %s", addr, vllmURL, modelName)
+	log.Printf("llama adapter listening on %s, targeting %s model %s", addr, llamaURL, modelName)
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -34,30 +31,6 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func intFromEnv(key string, fallback int) int {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func floatFromEnv(key string, fallback float64) float64 {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
