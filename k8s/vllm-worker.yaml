@@ -38,11 +38,11 @@ spec:
           image: 310429010516.dkr.ecr.us-east-1.amazonaws.com/inferflow:vllm-adapter
           imagePullPolicy: IfNotPresent
           env:
-            - name: VLLM_ADAPTER_ADDR
+            - name: LLAMA_ADAPTER_ADDR
               value: ":9000"
-            - name: VLLM_BASE_URL
+            - name: LLAMA_BASE_URL
               value: "http://127.0.0.1:8080"
-            - name: VLLM_MODEL_NAME
+            - name: LLAMA_MODEL_NAME
               value: "Qwen/Qwen2.5-0.5B-Instruct"
           ports:
             - containerPort: 9000

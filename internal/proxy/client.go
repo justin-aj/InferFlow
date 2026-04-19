@@ -18,9 +18,12 @@ type ChatMessage struct {
 }
 
 type ChatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Stream   bool          `json:"stream,omitempty"`
+	Model             string        `json:"model"`
+	Messages          []ChatMessage `json:"messages"`
+	Stream            bool          `json:"stream,omitempty"`
+	MaxTokens         int           `json:"max_tokens,omitempty"`
+	Temperature       float64       `json:"temperature,omitempty"`
+	RepetitionPenalty float64       `json:"repetition_penalty,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -45,9 +48,12 @@ type Usage struct {
 }
 
 type BackendRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model             string        `json:"model"`
+	Messages          []ChatMessage `json:"messages"`
+	Stream            bool          `json:"stream"`
+	MaxTokens         int           `json:"max_tokens,omitempty"`
+	Temperature       float64       `json:"temperature,omitempty"`
+	RepetitionPenalty float64       `json:"repetition_penalty,omitempty"`
 }
 
 type BackendResponse struct {
@@ -84,9 +90,12 @@ func (c *Client) HealthCheck(ctx context.Context, backend *router.Backend) error
 
 func (c *Client) SendChatCompletion(ctx context.Context, backend *router.Backend, reqBody ChatCompletionRequest) (ChatCompletionResponse, error) {
 	payload, err := json.Marshal(BackendRequest{
-		Model:    reqBody.Model,
-		Messages: reqBody.Messages,
-		Stream:   reqBody.Stream,
+		Model:             reqBody.Model,
+		Messages:          reqBody.Messages,
+		Stream:            reqBody.Stream,
+		MaxTokens:         reqBody.MaxTokens,
+		Temperature:       reqBody.Temperature,
+		RepetitionPenalty: reqBody.RepetitionPenalty,
 	})
 	if err != nil {
 		return ChatCompletionResponse{}, err

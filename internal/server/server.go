@@ -217,6 +217,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Inferflow-Backend", backend.Name)
 	w.Header().Set("X-Inferflow-Strategy", strategyName)
+	if strategyName == router.StrategyKVAware {
+		if decision.CacheHit {
+			w.Header().Set("X-Inferflow-Cache-Hit", "true")
+		} else {
+			w.Header().Set("X-Inferflow-Cache-Hit", "false")
+		}
+	}
 
 	s.metrics.IncInFlight()
 	defer s.metrics.DecInFlight()
@@ -383,18 +390,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	backendSelections := s.metrics.BackendSnapshot()
 
 	type backendStatus struct {
-		Name       string `json:"name"`
-		Healthy    bool   `json:"healthy"`
-		Selections int64  `json:"selections"`
-		LatencyMs  int64  `json:"latency_ms"`
+		Name      string `json:"name"`
+		Healthy   bool   `json:"healthy"`
+		Pending   int64  `json:"pending"`
+		LatencyMs int64  `json:"latency_ms"`
 	}
 	backends := make([]backendStatus, 0, len(s.cfg.Backends))
 	for _, b := range s.cfg.Backends {
 		backends = append(backends, backendStatus{
-			Name:       b.Name,
-			Healthy:    b.Healthy(),
-			Selections: backendSelections[b.Name],
-			LatencyMs:  latency[b.Name],
+			Name:      b.Name,
+			Healthy:   b.Healthy(),
+			Pending:   backendSelections[b.Name],
+			LatencyMs: latency[b.Name],
 		})
 	}
 

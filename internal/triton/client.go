@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"inferflow/internal/llm"
 )
 
 type Client struct {
@@ -56,7 +58,8 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return c.getHealth(ctx, modelReadyURL)
 }
 
-func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
+func (c *Client) Generate(ctx context.Context, opts llm.GenerateOpts) (string, error) {
+	prompt := flattenMessages(opts.Messages)
 	payload, err := json.Marshal(buildInferRequest(prompt, c.maxNewTokens))
 	if err != nil {
 		return "", err
@@ -85,6 +88,16 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	}
 
 	return extractGeneratedText(inferResp)
+}
+
+func flattenMessages(messages []llm.Message) string {
+	parts := make([]string, 0, len(messages))
+	for _, m := range messages {
+		if c := strings.TrimSpace(m.Content); c != "" {
+			parts = append(parts, m.Role+": "+c)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func buildInferRequest(prompt string, maxNewTokens int) inferRequest {

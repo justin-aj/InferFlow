@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 
+	"inferflow/internal/llm"
 	"inferflow/internal/proxy"
 )
 
 type Generator interface {
 	HealthCheck(context.Context) error
-	Generate(context.Context, string) (string, error)
+	Generate(context.Context, llm.GenerateOpts) (string, error)
 }
 
 func NewHandler(client Generator) http.Handler {
@@ -35,7 +35,7 @@ func NewHandler(client Generator) http.Handler {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if strings.TrimSpace(req.Model) == "" {
+		if req.Model == "" {
 			http.Error(w, "model is required", http.StatusBadRequest)
 			return
 		}
@@ -44,8 +44,17 @@ func NewHandler(client Generator) http.Handler {
 			return
 		}
 
-		prompt := flattenMessages(req.Messages)
-		output, err := client.Generate(r.Context(), prompt)
+		msgs := make([]llm.Message, len(req.Messages))
+		for i, m := range req.Messages {
+			msgs[i] = llm.Message{Role: m.Role, Content: m.Content}
+		}
+
+		output, err := client.Generate(r.Context(), llm.GenerateOpts{
+			Messages:          msgs,
+			MaxTokens:         req.MaxTokens,
+			Temperature:       req.Temperature,
+			RepetitionPenalty: req.RepetitionPenalty,
+		})
 		if err != nil {
 			http.Error(w, "backend inference failed", http.StatusBadGateway)
 			return
@@ -58,18 +67,6 @@ func NewHandler(client Generator) http.Handler {
 	})
 
 	return mux
-}
-
-func flattenMessages(messages []proxy.ChatMessage) string {
-	lines := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		content := strings.TrimSpace(msg.Content)
-		if content == "" {
-			continue
-		}
-		lines = append(lines, msg.Role+": "+content)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

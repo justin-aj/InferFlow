@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"inferflow/internal/llm"
 )
 
 func TestBuildInferRequest(t *testing.T) {
@@ -80,7 +82,7 @@ func TestClientHealthCheckAndGenerate(t *testing.T) {
 		t.Fatalf("health check: %v", err)
 	}
 
-	got, err := client.Generate(context.Background(), "hello")
+	got, err := client.Generate(context.Background(), llm.GenerateOpts{Messages: []llm.Message{{Role: "user", Content: "hello"}}})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -101,7 +103,7 @@ func TestClientGenerateHandlesTritonError(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "qwen3_0_6b", 2*time.Second, 64)
-	if _, err := client.Generate(context.Background(), "hello"); err == nil {
+	if _, err := client.Generate(context.Background(), llm.GenerateOpts{Messages: []llm.Message{{Role: "user", Content: "hello"}}}); err == nil {
 		t.Fatal("expected generate error")
 	}
 }

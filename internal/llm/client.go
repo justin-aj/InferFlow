@@ -1,4 +1,4 @@
-package vllm
+package llm
 
 import (
 	"bytes"
@@ -16,17 +16,17 @@ type Client struct {
 	httpClient *http.Client
 }
 
-type chatMessage struct {
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type chatRequest struct {
-	Model             string        `json:"model"`
-	Messages          []chatMessage `json:"messages"`
-	MaxTokens         int           `json:"max_tokens,omitempty"`
-	Temperature       float64       `json:"temperature,omitempty"`
-	RepetitionPenalty float64       `json:"repetition_penalty,omitempty"`
+	Model             string    `json:"model"`
+	Messages          []Message `json:"messages"`
+	MaxTokens         int       `json:"max_tokens,omitempty"`
+	Temperature       float64   `json:"temperature,omitempty"`
+	RepetitionPenalty float64   `json:"repetition_penalty,omitempty"`
 }
 
 type chatResponse struct {
@@ -34,7 +34,7 @@ type chatResponse struct {
 }
 
 type chatChoice struct {
-	Message chatMessage `json:"message"`
+	Message Message `json:"message"`
 }
 
 func NewClient(baseURL, modelName string, timeout time.Duration) *Client {
@@ -63,21 +63,20 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 
 // GenerateOpts holds per-request inference parameters.
 type GenerateOpts struct {
-	Messages          []chatMessage
+	Messages          []Message
 	MaxTokens         int
 	Temperature       float64
 	RepetitionPenalty float64
 }
 
 func (c *Client) Generate(ctx context.Context, opts GenerateOpts) (string, error) {
-	messages := opts.Messages
-	if len(messages) == 0 {
+	if len(opts.Messages) == 0 {
 		return "", fmt.Errorf("no messages provided")
 	}
 
 	payload, err := json.Marshal(chatRequest{
 		Model:             c.modelName,
-		Messages:          messages,
+		Messages:          opts.Messages,
 		MaxTokens:         opts.MaxTokens,
 		Temperature:       opts.Temperature,
 		RepetitionPenalty: opts.RepetitionPenalty,
